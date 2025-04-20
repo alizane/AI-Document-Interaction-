@@ -4,6 +4,8 @@ import { useState, useEffect, useRef } from "react"
 import { useSearchParams, useRouter } from "next/navigation"
 import Navbar from "../components/navbar"
 import Footer from "../components/footer"
+import ReactMarkdown from "react-markdown"
+import Mermaid from "mermaid"
 
 export default function InteractPage() {
   const searchParams = useSearchParams()
@@ -13,95 +15,227 @@ export default function InteractPage() {
   const [isRecording, setIsRecording] = useState(false)
   const [isLoading, setIsLoading] = useState(false)
   const [showSidePanel, setShowSidePanel] = useState(true)
+  const [darkMode, setDarkMode] = useState(false)
+  const [documentData, setDocumentData] = useState({
+    text: "",
+    key_points: [],
+    tables: [],
+    metadata: {},
+    keywords: [],
+  })
   const messagesEndRef = useRef(null)
+  const mermaidRef = useRef([])
 
-  const filename = searchParams.get("filename")
-  const size = searchParams.get("size")
+  const documentId = searchParams.get("document_id")
 
   useEffect(() => {
-    if (!filename || !size) {
+    if (!documentId) {
       router.push("/")
     } else {
-      // Add initial message
       setMessages([
         {
           role: "system",
-          content: `I've analyzed your PDF "${filename}". What would you like to know about it?`,
+          content: `I've analyzed your PDF with document ID "${documentId}". What would you like to know about it?`,
         },
       ])
+      fetchDocumentData()
     }
-  }, [filename, size, router])
+  }, [documentId, router])
 
   useEffect(() => {
     scrollToBottom()
   }, [messages])
 
+  useEffect(() => {
+    // Initialize Mermaid
+    Mermaid.initialize({ startOnLoad: true, theme: darkMode ? "dark" : "default" })
+    // Render Mermaid diagrams
+    messages.forEach((message, index) => {
+      const mermaidMatch = message.content.match(/```mermaid\n([\s\S]*?)\n```/)
+      if (mermaidMatch) {
+        const mermaidCode = mermaidMatch[1]
+        const id = `mermaid-${index}`
+        if (!mermaidRef.current.find((item) => item.id === id)) {
+          mermaidRef.current.push({ id, code: mermaidCode })
+          Mermaid.render(id, mermaidCode, (svgCode) => {
+            const element = document.getElementById(id)
+            if (element) element.innerHTML = svgCode
+          })
+        }
+      }
+    })
+  }, [messages, darkMode])
+
   const scrollToBottom = () => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" })
   }
 
+  const fetchDocumentData = async () => {
+    try {
+      const response = await fetch(`/api/document/${documentId}`)
+      if (!response.ok) throw new Error("Failed to fetch document data")
+      const data = await response.json()
+      setDocumentData(data)
+    } catch (error) {
+      console.error("Error fetching document data:", error)
+    }
+  }
+
   const handleSendMessage = async (e) => {
     e?.preventDefault()
-
     if (!input.trim() && !isRecording) return
 
-    const userMessage = isRecording ? "Voice transcription: Tell me what this PDF is about." : input
-
-    // Add user message to chat
+    const userMessage = isRecording ? "Voice transcription: Summarize the document." : input
     setMessages((prev) => [...prev, { role: "user", content: userMessage }])
     setInput("")
     setIsLoading(true)
 
-    // Simulate AI response delay
-    setTimeout(() => {
-      const responses = [
-        "This PDF contains a research paper on artificial intelligence and its applications in document processing. The main focus is on compression algorithms that preserve semantic meaning.",
-        "Based on my analysis, this document outlines the technical specifications for a new compression algorithm that can reduce PDF sizes by up to 80% while maintaining visual fidelity.",
-        "The PDF you uploaded is a business proposal for implementing AI-powered document management systems. It includes cost estimates, implementation timelines, and expected ROI.",
-        "This appears to be a legal document with several sections on data privacy and information handling. Would you like me to summarize a specific section?",
-      ]
-
-      const randomResponse = responses[Math.floor(Math.random() * responses.length)]
-
-      setMessages((prev) => [...prev, { role: "system", content: randomResponse }])
+    try {
+      const response = await fetch("/api/query", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ document_id: documentId, question: userMessage }),
+      })
+      if (!response.ok) throw new Error("API request failed")
+      const data = await response.json()
+      setMessages((prev) => [...prev, { role: "system", content: data.answer }])
+    } catch (error) {
+      setMessages((prev) => [
+        ...prev,
+        { role: "system", content: "Sorry, an error occurred. Please try again." },
+      ])
+      console.error("Query failed:", error)
+    } finally {
       setIsLoading(false)
-    }, 1500)
+    }
+  }
+
+  const handleSummarize = async () => {
+    setIsLoading(true)
+    try {
+      const response = await fetch("/api/summarize", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ document_id: documentId }),
+      })
+      if (!response.ok) throw new Error("Summarization failed")
+      const data = await response.json()
+      setMessages((prev) => [...prev, { role: "system", content: data.summary }])
+    } catch (error) {
+      setMessages((prev) => [
+        ...prev,
+        { role: "system", content: "Failed to generate summary. Please try again." },
+      ])
+      console.error("Summarization failed:", error)
+    } finally {
+      setIsLoading(false)
+    }
   }
 
   const toggleRecording = () => {
     if (isRecording) {
-      // Stop recording and process
       setIsRecording(false)
       handleSendMessage()
     } else {
-      // Start recording
       setIsRecording(true)
-      // In a real app, this would activate the microphone
       setTimeout(() => {
         setIsRecording(false)
-        setInput("Voice transcription: Tell me what this PDF is about.")
+        setInput("Voice transcription: Summarize the document.")
         handleSendMessage()
       }, 2000)
     }
+  }
+
+  const toggleDarkMode = () => {
+    setDarkMode(!darkMode)
   }
 
   const handleBack = () => {
     router.push("/")
   }
 
+  const renderMessageContent = (content, index) => {
+    const mermaidMatch = content.match(/```mermaid\n([\s\S]*?)\n```/)
+    const mermaidId = `mermaid-${index}`
+
+    return (
+      <>
+        <ReactMarkdown
+          components={{
+            table: ({ node, ...props }) => (
+              <table
+                className={`border-collapse w-full my-2 ${
+                  darkMode ? "border-gray-600" : "border-gray-300"
+                }`}
+                {...props}
+              />
+            ),
+            th: ({ node, ...props }) => (
+              <th
+                className={`border px-4 py-2 ${
+                  darkMode ? " buborder-gray-600 bg-gray-700" : "border-gray-300 bg-gray-100"
+                }`}
+                {...props}
+              />
+            ),
+            td: ({ node, ...props }) => (
+              <td
+                className={`border px-4 py-2 ${
+                  darkMode ? "border-gray-600" : "border-gray-300"
+                }`}
+                {...props}
+              />
+            ),
+          }}
+        >
+          {content.replace(/```mermaid\n([\s\S]*?)\n```/, "")}
+        </ReactMarkdown>
+        {mermaidMatch && (
+          <div className="my-4" id={mermaidId}>
+            {/* Mermaid diagram will be rendered here */}
+          </div>
+        )}
+      </>
+    )
+  }
+
   return (
-    <div className="min-h-screen flex flex-col bg-gradient-to-br from-white to-indigo-50">
+    <div
+      className={`flex flex-col min-h-screen ${
+        darkMode ? "bg-gray-900 text-white" : "bg-gradient-to-br from-white to-indigo-50"
+      }`}
+    >
       <Navbar />
-      <main className="flex-grow flex flex-col p-4 sm:p-8">
-        <div className="w-full max-w-7xl mx-auto bg-white rounded-2xl shadow-xl overflow-hidden flex flex-col lg:flex-row">
+      <main className="flex flex-col flex-grow p-4 sm:p-8">
+        <div className="flex justify-between mb-4">
+          <button
+            onClick={toggleDarkMode}
+            className={`p-2 rounded-full ${darkMode ? "bg-gray-700" : "bg-gray-200"}`}
+          >
+            {darkMode ? "☀️" : "🌙"}
+          </button>
+        </div>
+        <div
+          className={`flex flex-col w-full mx-auto overflow-hidden ${
+            darkMode ? "bg-gray-800" : "bg-white"
+          } shadow-xl max-w-7xl rounded-2xl lg:flex-row`}
+        >
           <div className={`flex-grow ${showSidePanel ? "lg:w-2/3" : "w-full"}`}>
-            <div className="h-full flex flex-col">
-              <div className="p-4 border-b flex items-center justify-between">
+            <div className="flex flex-col h-full">
+              <div
+                className={`flex items-center justify-between p-4 border-b ${
+                  darkMode ? "border-gray-700" : "border-gray-200"
+                }`}
+              >
                 <div className="flex items-center gap-3">
-                  <div className="w-8 h-10 flex items-center justify-center bg-indigo-100 rounded">
+                  <div
+                    className={`flex items-center justify-center w-8 h-10 rounded ${
+                      darkMode ? "bg-gray-700" : "bg-indigo-100"
+                    }`}
+                  >
                     <svg
                       xmlns="http://www.w3.org/2000/svg"
-                      className="h-5 w-5 text-indigo-600"
+                      className={`w-5 h-5 ${darkMode ? "text-gray-300" : "text-indigo-600"}`}
                       fill="none"
                       viewBox="0 0 24 24"
                       stroke="currentColor"
@@ -115,18 +249,26 @@ export default function InteractPage() {
                     </svg>
                   </div>
                   <div className="truncate">
-                    <p className="font-medium text-gray-900 truncate max-w-[200px] sm:max-w-sm">{filename}</p>
+                    <p
+                      className={`font-medium truncate max-w-[200px] sm:max-w-sm ${
+                        darkMode ? "text-gray-300" : "text-gray-900"
+                      }`}
+                    >
+                      Document ID: {documentId}
+                    </p>
                   </div>
                 </div>
                 <div className="flex items-center gap-2">
                   <button
                     onClick={() => setShowSidePanel(!showSidePanel)}
-                    className="p-2 text-gray-500 hover:text-indigo-600 lg:hidden"
+                    className={`p-2 ${
+                      darkMode ? "text-gray-300 hover:text-white" : "text-gray-500 hover:text-indigo-600"
+                    } lg:hidden`}
                   >
                     {showSidePanel ? (
                       <svg
                         xmlns="http://www.w3.org/2000/svg"
-                        className="h-5 w-5"
+                        className="w-5 h-5"
                         viewBox="0 0 24 24"
                         fill="none"
                         stroke="currentColor"
@@ -140,7 +282,7 @@ export default function InteractPage() {
                     ) : (
                       <svg
                         xmlns="http://www.w3.org/2000/svg"
-                        className="h-5 w-5"
+                        className="w-5 h-5"
                         viewBox="0 0 24 24"
                         fill="none"
                         stroke="currentColor"
@@ -153,10 +295,15 @@ export default function InteractPage() {
                       </svg>
                     )}
                   </button>
-                  <button onClick={handleBack} className="p-2 text-gray-500 hover:text-indigo-600">
+                  <button
+                    onClick={handleBack}
+                    className={`p-2 ${
+                      darkMode ? "text-gray-300 hover:text-white" : "text-gray-500 hover:text-indigo-600"
+                    }`}
+                  >
                     <svg
                       xmlns="http://www.w3.org/2000/svg"
-                      className="h-5 w-5"
+                      className="w-5 h-5"
                       viewBox="0 0 24 24"
                       fill="none"
                       stroke="currentColor"
@@ -171,29 +318,54 @@ export default function InteractPage() {
                 </div>
               </div>
 
-              <div className="flex-grow overflow-y-auto p-4 space-y-4">
+              <div
+                className={`flex-grow p-4 space-y-4 overflow-y-auto ${
+                  darkMode ? "bg-gray-800" : "bg-white"
+                }`}
+              >
                 {messages.map((message, index) => (
-                  <div key={index} className={`flex ${message.role === "user" ? "justify-end" : "justify-start"}`}>
+                  <div
+                    key={index}
+                    className={`flex ${message.role === "user" ? "justify-end" : "justify-start"}`}
+                  >
                     <div
                       className={`max-w-[80%] rounded-lg p-3 ${
-                        message.role === "user" ? "bg-indigo-600 text-white" : "bg-gray-100 text-gray-800"
+                        message.role === "user"
+                          ? darkMode
+                            ? "bg-indigo-500 text-white"
+                            : "bg-indigo-600 text-white"
+                          : darkMode
+                          ? "bg-gray-700 text-gray-200"
+                          : "bg-gray-100 text-gray-800"
                       }`}
                     >
-                      {message.content}
+                      {renderMessageContent(message.content, index)}
                     </div>
                   </div>
                 ))}
                 {isLoading && (
                   <div className="flex justify-start">
-                    <div className="max-w-[80%] rounded-lg p-3 bg-gray-100 text-gray-800">
+                    <div
+                      className={`max-w-[80%] rounded-lg p-3 ${
+                        darkMode ? "bg-gray-700" : "bg-gray-100"
+                      }`}
+                    >
                       <div className="flex space-x-2">
-                        <div className="w-2 h-2 rounded-full bg-gray-400 animate-bounce"></div>
                         <div
-                          className="w-2 h-2 rounded-full bg-gray-400 animate-bounce"
+                          className={`w-2 h-2 rounded-full animate-bounce ${
+                            darkMode ? "bg-gray-400" : "bg-gray-400"
+                          }`}
+                        ></div>
+                        <div
+                          className={`w-2 h-2 rounded-full animate-bounce ${
+                            darkMode ? "bg-gray-400" : "bg-gray-400"
+                          }`}
                           style={{ animationDelay: "0.2s" }}
                         ></div>
                         <div
-                          className="w-2 h-2 rounded-full bg-gray-400 animate-bounce"
+                          className={`w-2 h-2 rounded-full animate-bounce ${
+                            darkMode ? "bg-gray-400" : "bg-gray-400"
+                          }`}
                           style={{ animationDelay: "0.4s" }}
                         ></div>
                       </div>
@@ -203,7 +375,7 @@ export default function InteractPage() {
                 <div ref={messagesEndRef} />
               </div>
 
-              <div className="p-4 border-t">
+              <div className={`p-4 border-t ${darkMode ? "border-gray-700" : "border-gray-200"}`}>
                 <form onSubmit={handleSendMessage} className="flex items-center gap-2">
                   <button
                     type="button"
@@ -211,12 +383,14 @@ export default function InteractPage() {
                     className={`p-2 rounded-full ${
                       isRecording
                         ? "bg-red-100 text-red-600 animate-pulse"
+                        : darkMode
+                        ? "bg-gray-700 text-gray-300 hover:bg-gray-600"
                         : "bg-gray-100 text-gray-600 hover:bg-gray-200"
                     }`}
                   >
                     <svg
                       xmlns="http://www.w3.org/2000/svg"
-                      className="h-5 w-5"
+                      className="w-5 h-5"
                       viewBox="0 0 24 24"
                       fill="none"
                       stroke="currentColor"
@@ -235,12 +409,20 @@ export default function InteractPage() {
                     value={input}
                     onChange={(e) => setInput(e.target.value)}
                     placeholder="Ask a question about your PDF..."
-                    className="flex-grow p-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                    className={`flex-grow p-2 border rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500 ${
+                      darkMode ? "bg-gray-700 border-gray-600 text-gray-200" : "border-gray-300 text-gray-800"
+                    }`}
+                    disabled={isRecording}
                   />
-                  <button type="submit" className="p-2 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700">
+                  <button
+                    type="submit"
+                    className={`p-2 rounded-lg ${
+                      darkMode ? "bg-indigo-500 text-white hover:bg-indigo-600" : "bg-indigo-600 text-white hover:bg-indigo-700"
+                    }`}
+                  >
                     <svg
                       xmlns="http://www.w3.org/2000/svg"
-                      className="h-5 w-5"
+                      className="w-5 h-5"
                       viewBox="0 0 24 24"
                       fill="none"
                       stroke="currentColor"
@@ -253,67 +435,116 @@ export default function InteractPage() {
                     </svg>
                   </button>
                 </form>
+                <div className="flex gap-2 mt-2">
+                  <button
+                    onClick={handleSummarize}
+                    className={`px-3 py-1 text-sm rounded-lg ${
+                      darkMode ? "bg-gray-700 text-gray-300 hover:bg-gray-600" : "bg-gray-100 text-gray-600 hover:bg-gray-200"
+                    }`}
+                  >
+                    Summarize
+                  </button>
+                  <button
+                    onClick={() => setInput("What are the key points of this document?")}
+                    className={`px-3 py-1 text-sm rounded-lg ${
+                      darkMode ? "bg-gray-700 text-gray-300 hover:bg-gray-600" : "bg-gray-100 text-gray-600 hover:bg-gray-200"
+                    }`}
+                  >
+                    Key Points
+                  </button>
+                </div>
               </div>
             </div>
           </div>
 
           {showSidePanel && (
-            <div className="border-t lg:border-t-0 lg:border-l lg:w-1/3">
-              <div className="p-4 border-b">
-                <h3 className="font-medium text-gray-900">Document Content</h3>
+            <div
+              className={`border-t lg:border-t-0 lg:border-l lg:w-1/3 ${
+                darkMode ? "bg-gray-800 border-gray-700" : "bg-white border-gray-200"
+              }`}
+            >
+              <div className={`p-4 border-b ${darkMode ? "border-gray-700" : "border-gray-200"}`}>
+                <h3 className={`font-medium ${darkMode ? "text-gray-200" : "text-gray-900"}`}>
+                  Document Insights
+                </h3>
               </div>
               <div className="p-4 overflow-y-auto max-h-[calc(100vh-16rem)]">
-                <div className="prose prose-sm max-w-none">
-                  <h4 className="text-sm font-medium text-gray-900">Extracted Text</h4>
-                  <p className="text-sm text-gray-600 mt-2">
-                    Lorem ipsum dolor sit amet, consectetur adipiscing elit. Nullam in dui mauris. Vivamus hendrerit
-                    arcu sed erat molestie vehicula. Sed auctor neque eu tellus rhoncus ut eleifend nibh porttitor. Ut
-                    in nulla enim.
+                <div className="prose-sm prose max-w-none">
+                  {documentData.metadata.title && (
+                    <>
+                      <h4 className={`text-sm font-medium ${darkMode ? "text-gray-200" : "text-gray-900"}`}>
+                        Metadata
+                      </h4>
+                      <p className={`mt-2 text-sm ${darkMode ? "text-gray-400" : "text-gray-600"}`}>
+                        Title: {documentData.metadata.title}
+                      </p>
+                      {documentData.metadata.author && (
+                        <p className={`text-sm ${darkMode ? "text-gray-400" : "text-gray-600"}`}>
+                          Author: {documentData.metadata.author}
+                        </p>
+                      )}
+                    </>
+                  )}
+                  <h4 className={`text-sm font-medium ${darkMode ? "text-gray-200" : "text-gray-900"}`}>
+                    Extracted Text
+                  </h4>
+                  <p className={`mt-2 text-sm ${darkMode ? "text-gray-400" : "text-gray-600"}`}>
+                    {documentData.text.slice(0, 500)}...
                   </p>
-
-                  <h4 className="text-sm font-medium text-gray-900 mt-4">Key Points</h4>
-                  <ul className="list-disc pl-5 text-sm text-gray-600 mt-2">
-                    <li>The document discusses AI-powered compression techniques</li>
-                    <li>Compression ratios of up to 80% are mentioned</li>
-                    <li>There are references to maintaining visual fidelity</li>
-                    <li>Several algorithms are compared in the results section</li>
+                  <h4 className={`mt-4 text-sm font-medium ${darkMode ? "text-gray-200" : "text-gray-900"}`}>
+                    Key Points
+                  </h4>
+                  <ul className={`pl-5 mt-2 text-sm ${darkMode ? "text-gray-400" : "text-gray-600"} list-disc`}>
+                    {documentData.key_points.map((point, index) => (
+                      <li key={index}>{point}</li>
+                    ))}
                   </ul>
-
-                  <h4 className="text-sm font-medium text-gray-900 mt-4">Tables</h4>
-                  <div className="mt-2 border rounded overflow-x-auto">
-                    <table className="min-w-full divide-y divide-gray-200 text-sm">
-                      <thead className="bg-gray-50">
-                        <tr>
-                          <th className="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                            Algorithm
-                          </th>
-                          <th className="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                            Compression Ratio
-                          </th>
-                          <th className="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                            Quality Score
-                          </th>
-                        </tr>
-                      </thead>
-                      <tbody className="bg-white divide-y divide-gray-200">
-                        <tr>
-                          <td className="px-3 py-2 whitespace-nowrap">Standard</td>
-                          <td className="px-3 py-2 whitespace-nowrap">45%</td>
-                          <td className="px-3 py-2 whitespace-nowrap">7.2/10</td>
-                        </tr>
-                        <tr>
-                          <td className="px-3 py-2 whitespace-nowrap">Enhanced</td>
-                          <td className="px-3 py-2 whitespace-nowrap">68%</td>
-                          <td className="px-3 py-2 whitespace-nowrap">8.5/10</td>
-                        </tr>
-                        <tr>
-                          <td className="px-3 py-2 whitespace-nowrap">AI-Powered</td>
-                          <td className="px-3 py-2 whitespace-nowrap">82%</td>
-                          <td className="px-3 py-2 whitespace-nowrap">9.3/10</td>
-                        </tr>
-                      </tbody>
-                    </table>
-                  </div>
+                  <h4 className={`mt-4 text-sm font-medium ${darkMode ? "text-gray-200" : "text-gray-900"}`}>
+                    Keywords
+                  </h4>
+                  <ul className={`pl-5 mt-2 text-sm ${darkMode ? "text-gray-400" : "text-gray-600"} list-disc`}>
+                    {documentData.keywords.map((keyword, index) => (
+                      <li key={index}>{keyword}</li>
+                    ))}
+                  </ul>
+                  <h4 className={`mt-4 text-sm font-medium ${darkMode ? "text-gray-200" : "text-gray-900"}`}>
+                    Tables
+                  </h4>
+                  {documentData.tables.map((table, index) => (
+                    <div key={index} className="mt-2 overflow-x-auto border rounded">
+                      <table
+                        className={`min-w-full text-sm divide-y ${
+                          darkMode ? "divide-gray-600" : "divide-gray-200"
+                        }`}
+                      >
+                        <thead className={`${darkMode ? "bg-gray-700" : "bg-gray-50"}`}>
+                          <tr>
+                            {table[0].map((header, i) => (
+                              <th
+                                key={i}
+                                className={`px-3 py-2 text-xs font-medium tracking-wider text-left uppercase ${
+                                  darkMode ? "text-gray-400" : "text-gray-500"
+                                }`}
+                              >
+                                {header}
+                              </th>
+                            ))}
+                          </tr>
+                        </thead>
+                        <tbody className={`${darkMode ? "bg-gray-800 divide-gray-600" : "bg-white divide-gray-200"}`}>
+                          {table.slice(1).map((row, i) => (
+                            <tr key={i}>
+                              {row.map((cell, j) => (
+                                <td key={j} className="px-3 py-2 whitespace-nowrap">
+                                  {cell}
+                                </td>
+                              ))}
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  ))}
                 </div>
               </div>
             </div>
@@ -321,6 +552,34 @@ export default function InteractPage() {
         </div>
       </main>
       <Footer />
+      <style jsx global>{`
+        .markdown ul {
+          list-style-type: disc;
+          padding-left: 1.5rem;
+        }
+        .markdown table {
+          border-collapse: collapse;
+          width: 100%;
+          margin: 1rem 0;
+        }
+        .markdown th,
+        .markdown td {
+          border: 1px solid ${darkMode ? "#4b5563" : "#d1d5db"};
+          padding: 8px;
+          text-align: left;
+        }
+        .markdown th {
+          background-color: ${darkMode ? "#374151" : "#f3f4f6"};
+        }
+        .markdown strong {
+          font-weight: 600;
+        }
+        .mermaid {
+          display: flex;
+          justify-content: center;
+          margin: 1rem 0;
+        }
+      `}</style>
     </div>
   )
 }
