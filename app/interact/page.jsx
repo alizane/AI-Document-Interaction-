@@ -6,6 +6,8 @@ import Navbar from "../components/navbar"
 import Footer from "../components/footer"
 import ReactMarkdown from "react-markdown"
 import Mermaid from "mermaid"
+import { Chart } from "chart.js/auto"
+import { motion } from "framer-motion"
 
 export default function InteractPage() {
   const searchParams = useSearchParams()
@@ -23,19 +25,32 @@ export default function InteractPage() {
     metadata: {},
     keywords: [],
   })
+  const [isFetchingData, setIsFetchingData] = useState(false)
   const messagesEndRef = useRef(null)
   const mermaidRef = useRef([])
+  const chartRef = useRef(null)
+  const canvasRef = useRef(null)
+  const [chartInstance, setChartInstance] = useState(null)
 
   const documentId = searchParams.get("document_id")
 
+  // Utility function to clean response text
+  const cleanResponse = (text) => {
+    return text
+      .replace(/[\s"]*\.*[\s"]*$/gm, "")
+      .replace(/,\s*$/gm, "")
+      .trim()
+  }
+
   useEffect(() => {
-    if (!documentId) {
+    if (!documentId || !/^[a-f0-9]{32}\.(pdf|mp4)$/.test(documentId)) {
       router.push("/")
+      setMessages([{ role: "system", content: "Whoa, invalid document ID, bro! Head back and upload a valid PDF." }])
     } else {
       setMessages([
         {
           role: "system",
-          content: `I've analyzed your PDF with document ID "${documentId}". What would you like to know about it?`,
+          content: `Hey bro, I’ve checked out your PDF with ID "${documentId}". What’s on your mind?`,
         },
       ])
       fetchDocumentData()
@@ -47,37 +62,85 @@ export default function InteractPage() {
   }, [messages])
 
   useEffect(() => {
-    // Initialize Mermaid
     Mermaid.initialize({ startOnLoad: true, theme: darkMode ? "dark" : "default" })
-    // Render Mermaid diagrams
-    messages.forEach((message, index) => {
-      const mermaidMatch = message.content.match(/```mermaid\n([\s\S]*?)\n```/)
-      if (mermaidMatch) {
-        const mermaidCode = mermaidMatch[1]
-        const id = `mermaid-${index}`
-        if (!mermaidRef.current.find((item) => item.id === id)) {
-          mermaidRef.current.push({ id, code: mermaidCode })
-          Mermaid.render(id, mermaidCode, (svgCode) => {
-            const element = document.getElementById(id)
-            if (element) element.innerHTML = svgCode
-          })
-        }
-      }
+    mermaidRef.current = messages
+      .map((message, index) => {
+        const mermaidMatch = message.content.match(/```mermaid\n([\s\S]*?)\n```/)
+        return mermaidMatch ? { id: `mermaid-${index}`, code: mermaidMatch[1] } : null
+      })
+      .filter(Boolean)
+
+    mermaidRef.current.forEach(({ id, code }) => {
+      Mermaid.render(id, code, (svgCode) => {
+        const element = document.getElementId(id)
+        if (element && !element.innerHTML) element.innerHTML = svgCode
+      })
     })
   }, [messages, darkMode])
+
+  useEffect(() => {
+    if (chartInstance) {
+      chartInstance.destroy()
+    }
+    if (chartRef.current && documentData.keywords.length > 0) {
+      const ctx = chartRef.current.getContext("2d")
+      const newChartInstance = new Chart(ctx, {
+        type: "bar",
+        data: {
+          labels: documentData.keywords,
+          datasets: [
+            {
+              label: "Keyword Frequency",
+              data: Array(documentData.keywords.length).fill(1), // Placeholder
+              backgroundColor: darkMode ? "rgba(75, 192, 192, 0.6)" : "rgba(75, 192, 192, 0.8)",
+              borderColor: darkMode ? "rgba(75, 192, 192, 1)" : "rgba(75, 192, 192, 1)",
+              borderWidth: 1,
+            },
+          ],
+        },
+        options: {
+          scales: {
+            y: { beginAtZero: true, title: { display: true, text: "Count" } },
+            x: { title: { display: true, text: "Keywords" } },
+          },
+          plugins: { legend: { display: false } },
+        },
+      })
+      setChartInstance(newChartInstance)
+    }
+  }, [documentData, darkMode])
 
   const scrollToBottom = () => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" })
   }
 
   const fetchDocumentData = async () => {
+    setIsFetchingData(true)
     try {
       const response = await fetch(`/api/document/${documentId}`)
-      if (!response.ok) throw new Error("Failed to fetch document data")
+      console.log("Fetch response:", response.status, response.statusText)
+      if (!response.ok) {
+        throw new Error(`HTTP ${response.status}: ${response.statusText}`)
+      }
       const data = await response.json()
-      setDocumentData(data)
+      setDocumentData(data || {
+        text: "No data available, bro! Upload a valid PDF.",
+        key_points: ["No key points available."],
+        tables: [],
+        metadata: {},
+        keywords: ["No keywords available."],
+      })
     } catch (error) {
-      console.error("Error fetching document data:", error)
+      console.error("Error fetching document data:", error.message, error)
+      setDocumentData({
+        text: `Error: ${error.message}. Please ensure the document ID "${documentId}" is correct and uploaded, or try again later, bro.`,
+        key_points: ["No key points available."],
+        tables: [],
+        metadata: {},
+        keywords: ["No keywords available."],
+      })
+    } finally {
+      setIsFetchingData(false)
     }
   }
 
@@ -98,11 +161,12 @@ export default function InteractPage() {
       })
       if (!response.ok) throw new Error("API request failed")
       const data = await response.json()
-      setMessages((prev) => [...prev, { role: "system", content: data.answer }])
+      const cleanedAnswer = cleanResponse(data.answer)
+      setMessages((prev) => [...prev, { role: "system", content: cleanedAnswer }])
     } catch (error) {
       setMessages((prev) => [
         ...prev,
-        { role: "system", content: "Sorry, an error occurred. Please try again." },
+        { role: "system", content: "Sorry, an error occurred, dude! Let’s try again." },
       ])
       console.error("Query failed:", error)
     } finally {
@@ -120,11 +184,12 @@ export default function InteractPage() {
       })
       if (!response.ok) throw new Error("Summarization failed")
       const data = await response.json()
-      setMessages((prev) => [...prev, { role: "system", content: data.summary }])
+      const cleanedSummary = cleanResponse(data.summary)
+      setMessages((prev) => [...prev, { role: "system", content: cleanedSummary }])
     } catch (error) {
       setMessages((prev) => [
         ...prev,
-        { role: "system", content: "Failed to generate summary. Please try again." },
+        { role: "system", content: "Failed to summarize, bro! Give it another go." },
       ])
       console.error("Summarization failed:", error)
     } finally {
@@ -159,44 +224,83 @@ export default function InteractPage() {
     const mermaidId = `mermaid-${index}`
 
     return (
-      <>
-        <ReactMarkdown
-          components={{
-            table: ({ node, ...props }) => (
-              <table
-                className={`border-collapse w-full my-2 ${
-                  darkMode ? "border-gray-600" : "border-gray-300"
-                }`}
-                {...props}
-              />
-            ),
-            th: ({ node, ...props }) => (
-              <th
-                className={`border px-4 py-2 ${
-                  darkMode ? " buborder-gray-600 bg-gray-700" : "border-gray-300 bg-gray-100"
-                }`}
-                {...props}
-              />
-            ),
-            td: ({ node, ...props }) => (
-              <td
-                className={`border px-4 py-2 ${
-                  darkMode ? "border-gray-600" : "border-gray-300"
-                }`}
-                {...props}
-              />
-            ),
-          }}
-        >
-          {content.replace(/```mermaid\n([\s\S]*?)\n```/, "")}
-        </ReactMarkdown>
+      <motion.div
+        initial={{ opacity: 0, y: 20 }}
+        animate={{ opacity: 1, y: 0 }}
+        transition={{ duration: 0.3 }}
+      >
+        <div className="markdown">
+          <ReactMarkdown
+            components={{
+              table: ({ node, ...props }) => (
+                <table
+                  className={`border-collapse w-full my-2 ${
+                    darkMode ? "border-gray-600" : "border-gray-300"
+                  }`}
+                  {...props}
+                />
+              ),
+              th: ({ node, ...props }) => (
+                <th
+                  className={`border px-4 py-2 ${
+                    darkMode ? "bg-gray-700 border-gray-600" : "bg-gray-100 border-gray-300"
+                  }`}
+                  {...props}
+                />
+              ),
+              td: ({ node, ...props }) => (
+                <td
+                  className={`border px-4 py-2 ${
+                    darkMode ? "border-gray-600" : "border-gray-300"
+                  }`}
+                  {...props}
+                />
+              ),
+              p: ({ node, ...props }) => <p className="mb-2" {...props} />,
+              ul: ({ node, ...props }) => <ul className="pl-5 mb-2 list-disc" {...props} />,
+              ol: ({ node, ...props }) => <ol className="pl-5 mb-2 list-decimal" {...props} />,
+            }}
+          >
+            {mermaidMatch ? content.replace(mermaidMatch[0], "") : content}
+          </ReactMarkdown>
+        </div>
         {mermaidMatch && (
           <div className="my-4" id={mermaidId}>
-            {/* Mermaid diagram will be rendered here */}
+            {/* Mermaid diagram will render here */}
           </div>
         )}
-      </>
+      </motion.div>
     )
+  }
+
+  const openCanvasPanel = () => {
+    if (canvasRef.current) {
+      const ctx = canvasRef.current.getContext("2d")
+      if (chartInstance) chartInstance.destroy()
+      const newChartInstance = new Chart(ctx, {
+        type: "bar",
+        data: {
+          labels: documentData.keywords,
+          datasets: [
+            {
+              label: "Keyword Frequency",
+              data: Array(documentData.keywords.length).fill(Math.floor(Math.random() * 10) + 1),
+              backgroundColor: darkMode ? "rgba(75, 192, 192, 0.6)" : "rgba(75, 192, 192, 0.8)",
+              borderColor: darkMode ? "rgba(75, 192, 192, 1)" : "rgba(75, 192, 192, 1)",
+              borderWidth: 1,
+            },
+          ],
+        },
+        options: {
+          scales: {
+            y: { beginAtZero: true, title: { display: true, text: "Count" } },
+            x: { title: { display: true, text: "Keywords" } },
+          },
+          plugins: { legend: { display: false } },
+        },
+      })
+      setChartInstance(newChartInstance)
+    }
   }
 
   return (
@@ -213,6 +317,14 @@ export default function InteractPage() {
             className={`p-2 rounded-full ${darkMode ? "bg-gray-700" : "bg-gray-200"}`}
           >
             {darkMode ? "☀️" : "🌙"}
+          </button>
+          <button
+            onClick={openCanvasPanel}
+            className={`p-2 rounded-full ${
+              darkMode ? "bg-gray-700 text-gray-300 hover:bg-gray-600" : "bg-gray-200 text-gray-600 hover:bg-gray-300"
+            }`}
+          >
+            📊
           </button>
         </div>
         <div
@@ -458,7 +570,10 @@ export default function InteractPage() {
           </div>
 
           {showSidePanel && (
-            <div
+            <motion.div
+              initial={{ opacity: 0, x: 50 }}
+              animate={{ opacity: 1, x: 0 }}
+              transition={{ duration: 0.3 }}
               className={`border-t lg:border-t-0 lg:border-l lg:w-1/3 ${
                 darkMode ? "bg-gray-800 border-gray-700" : "bg-white border-gray-200"
               }`}
@@ -488,74 +603,135 @@ export default function InteractPage() {
                   <h4 className={`text-sm font-medium ${darkMode ? "text-gray-200" : "text-gray-900"}`}>
                     Extracted Text
                   </h4>
-                  <p className={`mt-2 text-sm ${darkMode ? "text-gray-400" : "text-gray-600"}`}>
-                    {documentData.text.slice(0, 500)}...
-                  </p>
+                  {isFetchingData ? (
+                    <p className={`mt-2 text-sm ${darkMode ? "text-gray-400" : "text-gray-600"}`}>
+                      Loading...
+                    </p>
+                  ) : (
+                    <p className={`mt-2 text-sm ${darkMode ? "text-gray-400" : "text-gray-600"}`}>
+                      {documentData.text}
+                    </p>
+                  )}
                   <h4 className={`mt-4 text-sm font-medium ${darkMode ? "text-gray-200" : "text-gray-900"}`}>
                     Key Points
                   </h4>
-                  <ul className={`pl-5 mt-2 text-sm ${darkMode ? "text-gray-400" : "text-gray-600"} list-disc`}>
-                    {documentData.key_points.map((point, index) => (
-                      <li key={index}>{point}</li>
-                    ))}
-                  </ul>
+                  {isFetchingData ? (
+                    <p className={`mt-2 text-sm ${darkMode ? "text-gray-400" : "text-gray-600"}`}>
+                      Loading...
+                    </p>
+                  ) : (
+                    <ul className={`pl-5 mt-2 text-sm ${darkMode ? "text-gray-400" : "text-gray-600"} list-disc`}>
+                      {documentData.key_points.map((point, index) => (
+                        <li key={index}>{point}</li>
+                      ))}
+                    </ul>
+                  )}
                   <h4 className={`mt-4 text-sm font-medium ${darkMode ? "text-gray-200" : "text-gray-900"}`}>
                     Keywords
                   </h4>
-                  <ul className={`pl-5 mt-2 text-sm ${darkMode ? "text-gray-400" : "text-gray-600"} list-disc`}>
-                    {documentData.keywords.map((keyword, index) => (
-                      <li key={index}>{keyword}</li>
-                    ))}
-                  </ul>
+                  {isFetchingData ? (
+                    <p className={`mt-2 text-sm ${darkMode ? "text-gray-400" : "text-gray-600"}`}>
+                      Loading...
+                    </p>
+                  ) : (
+                    <ul className={`pl-5 mt-2 text-sm ${darkMode ? "text-gray-400" : "text-gray-600"} list-disc`}>
+                      {documentData.keywords.map((keyword, index) => (
+                        <li key={index}>{keyword}</li>
+                      ))}
+                    </ul>
+                  )}
+                  <h4 className={`mt-4 text-sm font-medium ${darkMode ? "text-gray-200" : "text-gray-900"}`}>
+                    Keyword Chart
+                  </h4>
+                  <div className="mt-2">
+                    <canvas ref={chartRef} style={{ maxHeight: "200px" }}></canvas>
+                  </div>
                   <h4 className={`mt-4 text-sm font-medium ${darkMode ? "text-gray-200" : "text-gray-900"}`}>
                     Tables
                   </h4>
-                  {documentData.tables.map((table, index) => (
-                    <div key={index} className="mt-2 overflow-x-auto border rounded">
-                      <table
-                        className={`min-w-full text-sm divide-y ${
-                          darkMode ? "divide-gray-600" : "divide-gray-200"
-                        }`}
-                      >
-                        <thead className={`${darkMode ? "bg-gray-700" : "bg-gray-50"}`}>
-                          <tr>
-                            {table[0].map((header, i) => (
-                              <th
-                                key={i}
-                                className={`px-3 py-2 text-xs font-medium tracking-wider text-left uppercase ${
-                                  darkMode ? "text-gray-400" : "text-gray-500"
+                  {isFetchingData ? (
+                    <p className={`mt-2 text-sm ${darkMode ? "text-gray-400" : "text-gray-600"}`}>
+                      Loading...
+                    </p>
+                  ) : documentData.tables.length > 0 ? (
+                    documentData.tables.map((table, index) => (
+                      <div key={index} className="mt-2 overflow-x-auto border rounded">
+                        <ReactMarkdown
+                          components={{
+                            table: ({ node, ...props }) => (
+                              <table
+                                className={`min-w-full text-sm divide-y ${
+                                  darkMode ? "divide-gray-600" : "divide-gray-200"
                                 }`}
-                              >
-                                {header}
-                              </th>
-                            ))}
-                          </tr>
-                        </thead>
-                        <tbody className={`${darkMode ? "bg-gray-800 divide-gray-600" : "bg-white divide-gray-200"}`}>
-                          {table.slice(1).map((row, i) => (
-                            <tr key={i}>
-                              {row.map((cell, j) => (
-                                <td key={j} className="px-3 py-2 whitespace-nowrap">
-                                  {cell}
-                                </td>
-                              ))}
-                            </tr>
-                          ))}
-                        </tbody>
-                      </table>
-                    </div>
-                  ))}
+                                {...props}
+                              />
+                            ),
+                            th: ({ node, ...props }) => (
+                              <th
+                                className={`px-3 py-2 text-xs font-medium tracking-wider text-left uppercase ${
+                                  darkMode ? "bg-gray-700 border-gray-600" : "bg-gray-50 border-gray-300"
+                                }`}
+                                {...props}
+                              />
+                            ),
+                            td: ({ node, ...props }) => (
+                              <td
+                                className={`px-3 py-2 ${
+                                  darkMode ? "border-gray-600" : "border-gray-300"
+                                }`}
+                                {...props}
+                              />
+                            ),
+                          }}
+                        >
+                          {table}
+                        </ReactMarkdown>
+                      </div>
+                    ))
+                  ) : (
+                    <p className={`mt-2 text-sm ${darkMode ? "text-gray-400" : "text-gray-600"}`}>
+                      No tables found.
+                    </p>
+                  )}
                 </div>
               </div>
-            </div>
+            </motion.div>
           )}
         </div>
       </main>
       <Footer />
+
+      <motion.div
+        initial={{ opacity: 0, y: 50 }}
+        animate={{ opacity: 1, y: 0 }}
+        exit={{ opacity: 0, y: 50 }}
+        className={`fixed bottom-4 right-4 w-64 h-64 bg-white rounded-lg shadow-lg p-4 ${
+          darkMode ? "bg-gray-800 text-white" : "bg-white text-gray-800"
+        }`}
+        style={{ display: chartInstance ? "block" : "none" }}
+      >
+        <h4 className="mb-2 text-sm font-medium">Chart Canvas</h4>
+        <canvas ref={canvasRef} style={{ maxHeight: "200px" }}></canvas>
+        <button
+          onClick={() => setChartInstance(null)}
+          className={`mt-2 px-3 py-1 text-sm rounded-lg ${
+            darkMode ? "bg-gray-700 text-gray-300 hover:bg-gray-600" : "bg-gray-200 text-gray-600 hover:bg-gray-300"
+          }`}
+        >
+          Close
+        </button>
+      </motion.div>
+
       <style jsx global>{`
         .markdown ul {
           list-style-type: disc;
           padding-left: 1.5rem;
+          margin-bottom: 1rem;
+        }
+        .markdown ol {
+          list-style-type: decimal;
+          padding-left: 1.5rem;
+          margin-bottom: 1rem;
         }
         .markdown table {
           border-collapse: collapse;
@@ -570,6 +746,7 @@ export default function InteractPage() {
         }
         .markdown th {
           background-color: ${darkMode ? "#374151" : "#f3f4f6"};
+          font-weight: 600;
         }
         .markdown strong {
           font-weight: 600;
@@ -578,6 +755,13 @@ export default function InteractPage() {
           display: flex;
           justify-content: center;
           margin: 1rem 0;
+        }
+        @keyframes bounce {
+          0%, 100% { transform: translateY(0); }
+          50% { transform: translateY(-5px); }
+        }
+        .animate-bounce {
+          animation: bounce 1s infinite;
         }
       `}</style>
     </div>
